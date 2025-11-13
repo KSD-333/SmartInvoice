@@ -5,15 +5,23 @@ import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Input } from "@/components/ui/input"
+import { Search } from "lucide-react"
 import InvoiceList from "@/components/invoices/invoice-list"
 import ChatBot from "@/components/chatbot/chat-bot"
 import UploadInvoice from "@/components/invoices/upload-invoice"
+import ManualInvoiceCreate from "@/components/invoices/manual-invoice-create"
+import { InvoiceViewer } from "@/components/invoices/invoice-viewer"
 
 export default function DashboardPage() {
   const [user, setUser] = useState<any>(null)
   const [userRole, setUserRole] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [invoices, setInvoices] = useState<any[]>([])
+  const [filteredInvoices, setFilteredInvoices] = useState<any[]>([])
+  const [vendorSearch, setVendorSearch] = useState("")
+  const [viewingInvoice, setViewingInvoice] = useState<any>(null)
+  const [isViewDialogOpen, setIsViewDialogOpen] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
@@ -46,7 +54,7 @@ export default function DashboardPage() {
           .insert({
             id: user.id,
             email: user.email,
-            role: "user",
+            role: "vendor",
             full_name: user.email?.split("@")[0]
           })
           .select()
@@ -59,20 +67,91 @@ export default function DashboardPage() {
         }
       }
 
-      setUserRole(profile?.role || "user")
-
-      // Fetch invoices
-      const { data: invoicesData } = await supabase
-        .from("invoices")
-        .select("*")
-        .order("created_at", { ascending: false })
-      
-      setInvoices(invoicesData || [])
+      setUserRole(profile?.role || "vendor")
       setLoading(false)
     }
 
     checkAuth()
   }, [router])
+
+  // Fetch invoices when user and role are ready
+  useEffect(() => {
+    if (user && userRole) {
+      fetchInvoices()
+    }
+  }, [user, userRole])
+
+  // Separate effect for filtering
+  useEffect(() => {
+    // Filter invoices by vendor name
+    if (vendorSearch.trim() === "") {
+      setFilteredInvoices(invoices)
+    } else {
+      const filtered = invoices.filter((invoice) =>
+        invoice.vendor_name.toLowerCase().includes(vendorSearch.toLowerCase())
+      )
+      setFilteredInvoices(filtered)
+    }
+  }, [invoices, vendorSearch])
+
+  const fetchInvoices = async () => {
+    const supabase = createClient()
+    
+    // Check if user exists before querying
+    if (!user) {
+      console.error("User not loaded yet")
+      return
+    }
+    
+    // Vendors see only their own invoices, admins see all
+    let query = supabase.from("invoices").select("*")
+    
+    if (userRole !== "admin") {
+      // All non-admin users are vendors - show only their invoices
+      query = query.eq("user_id", user.id)
+    }
+    
+    const { data: invoicesData } = await query.order("created_at", { ascending: false })
+    
+    // Auto-update overdue invoices
+    if (invoicesData) {
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      
+      const overdueUpdates = invoicesData
+        .filter((invoice) => {
+          const dueDate = new Date(invoice.due_date)
+          dueDate.setHours(0, 0, 0, 0)
+          return (
+            (invoice.status === "unpaid" || invoice.status === "pending") &&
+            dueDate < today
+          )
+        })
+        .map((invoice) => invoice.id)
+
+      if (overdueUpdates.length > 0) {
+        await supabase
+          .from("invoices")
+          .update({ status: "overdue" })
+          .in("id", overdueUpdates)
+        
+        // Re-fetch invoices after update
+        const { data: updatedInvoices } = await supabase
+          .from("invoices")
+          .select("*")
+          .order("created_at", { ascending: false })
+        
+        setInvoices(updatedInvoices || [])
+      } else {
+        setInvoices(invoicesData || [])
+      }
+    }
+  }
+
+  const handleViewInvoice = (invoice: any) => {
+    setViewingInvoice(invoice)
+    setIsViewDialogOpen(true)
+  }
 
   if (loading) {
     return (
@@ -95,10 +174,10 @@ export default function DashboardPage() {
               className={`px-3 py-1 rounded text-xs font-semibold ${
                 userRole === "admin"
                   ? "bg-red-900/30 text-red-200 border border-red-800"
-                  : "bg-blue-900/30 text-blue-200 border border-blue-800"
+                  : "bg-green-900/30 text-green-200 border border-green-800"
               }`}
             >
-              {userRole?.toUpperCase() || "USER"}
+              {userRole === "admin" ? "ADMIN" : "VENDOR"}
             </span>
           </div>
           <div className="flex items-center gap-4">
@@ -134,31 +213,53 @@ export default function DashboardPage() {
             <TabsTrigger value="invoices" className="text-slate-300 data-[state=active]:text-slate-50">
               Invoices
             </TabsTrigger>
-            {userRole === "admin" && (
-              <TabsTrigger value="upload" className="text-slate-300 data-[state=active]:text-slate-50">
-                Upload
-              </TabsTrigger>
-            )}
+            <TabsTrigger value="upload" className="text-slate-300 data-[state=active]:text-slate-50">
+              Upload
+            </TabsTrigger>
+            <TabsTrigger value="create" className="text-slate-300 data-[state=active]:text-slate-50">
+              Create Manually
+            </TabsTrigger>
             <TabsTrigger value="chat" className="text-slate-300 data-[state=active]:text-slate-50">
               AI Chat
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="invoices">
-            <InvoiceList invoices={invoices} />
+          <TabsContent value="invoices" className="space-y-4">
+            {/* Vendor Search Bar */}
+            <div className="relative max-w-md">
+              <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+              <Input
+                placeholder="Search by vendor name..."
+                value={vendorSearch}
+                onChange={(e) => setVendorSearch(e.target.value)}
+                className="pl-10 bg-slate-800 border-slate-600 text-white"
+              />
+            </div>
+            <InvoiceList invoices={filteredInvoices} onView={handleViewInvoice} />
           </TabsContent>
 
-          {userRole === "admin" && (
-            <TabsContent value="upload">
-              <UploadInvoice />
-            </TabsContent>
-          )}
+          <TabsContent value="upload">
+            <UploadInvoice onUploadSuccess={fetchInvoices} />
+          </TabsContent>
+
+          <TabsContent value="create">
+            <ManualInvoiceCreate onCreateSuccess={fetchInvoices} />
+          </TabsContent>
 
           <TabsContent value="chat">
             <ChatBot />
           </TabsContent>
         </Tabs>
       </main>
+
+      {/* View Invoice Dialog */}
+      {viewingInvoice && (
+        <InvoiceViewer
+          invoice={viewingInvoice}
+          open={isViewDialogOpen}
+          onOpenChange={setIsViewDialogOpen}
+        />
+      )}
     </div>
   )
 }

@@ -8,12 +8,12 @@ import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { createClient } from "@/lib/supabase/client"
-import { createAdminClient } from "@/lib/supabase/admin"
 
 export default function SignUpPage() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [fullName, setFullName] = useState("")
+  const [companyName, setCompanyName] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const router = useRouter()
@@ -32,23 +32,35 @@ export default function SignUpPage() {
           data: {
             full_name: fullName,
           },
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
+          // Don't use emailRedirectTo for local development
+          // emailRedirectTo: `${window.location.origin}/auth/callback`,
         },
       })
 
       if (authError) throw authError
 
       if (data?.user) {
-        const adminClient = createAdminClient()
-        const { error: profileError } = await adminClient.from("profiles").insert({
+        // Wait a moment for the user session to be established
+        await new Promise(resolve => setTimeout(resolve, 500))
+        
+        // Create profile using the regular client (user is now authenticated)
+        const { error: profileError } = await supabase.from("profiles").insert({
           id: data.user.id,
           email,
           full_name: fullName,
-          role: "user",
+          role: "vendor",
+          company_name: companyName || null,
         })
 
         if (profileError) {
-          console.error("Profile creation error:", profileError)
+          console.error("Profile creation error details:", {
+            code: profileError.code,
+            message: profileError.message,
+            details: profileError.details,
+            hint: profileError.hint
+          })
+          // Profile might already exist from trigger or RLS might block, that's okay
+          // The user can still log in
         }
 
         router.push("/auth/sign-up-success")
@@ -107,6 +119,20 @@ export default function SignUpPage() {
                 disabled={loading}
               />
             </div>
+            
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-100">Company Name (Optional)</label>
+              <Input
+                type="text"
+                placeholder="Your Company Ltd."
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                className="bg-slate-800 border-slate-600 text-slate-50 placeholder:text-slate-500"
+                disabled={loading}
+              />
+              <p className="text-xs text-slate-400">All accounts are Vendor accounts with full invoice management</p>
+            </div>
+
             <Button
               type="submit"
               className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium"

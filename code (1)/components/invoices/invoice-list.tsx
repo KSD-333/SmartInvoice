@@ -15,37 +15,51 @@ import {
   TableBody,
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Eye } from "lucide-react"
 
 // Helper function to get status color
 const getStatusColor = (status: string) => {
   switch (status.toLowerCase()) {
+    case "submitted":
+      return "bg-blue-500/10 text-blue-500 hover:bg-blue-500/20"
+    case "approved":
+      return "bg-cyan-500/10 text-cyan-500 hover:bg-cyan-500/20"
     case "paid":
       return "bg-green-500/10 text-green-500 hover:bg-green-500/20"
-    case "pending":
+    case "rejected":
+      return "bg-red-500/10 text-red-500 hover:bg-red-500/20"
+    case "unpaid":
       return "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20"
     case "overdue":
-      return "bg-red-500/10 text-red-500 hover:bg-red-500/20"
+      return "bg-orange-500/10 text-orange-500 hover:bg-orange-500/20"
+    case "pending":
+      return "bg-purple-500/10 text-purple-500 hover:bg-purple-500/20"
     default:
       return "bg-slate-500/10 text-slate-500 hover:bg-slate-500/20"
   }
 }
 
 interface Invoice {
-  id: number
+  id: number | string
   invoice_number: string
   vendor_name: string
   amount: number
   due_date: string
   status: string
+  file_url?: string | null
+  invoice_date?: string
+  description?: string | null
 }
 
 interface InvoiceListProps {
   invoices: Invoice[]
+  onView?: (invoice: Invoice) => void
 }
 
-const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [] }) => {
+const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [], onView }) => {
   const totalAmount = invoices.reduce((acc, invoice) => acc + invoice.amount, 0)
-  const pendingAmount = invoices.reduce((acc, invoice) => acc + (invoice.status === "Pending" ? invoice.amount : 0), 0)
+  const pendingAmount = invoices.reduce((acc, invoice) => acc + (invoice.status.toLowerCase() === "unpaid" || invoice.status.toLowerCase() === "pending" ? invoice.amount : 0), 0)
 
   return (
     <div className="space-y-6">
@@ -99,6 +113,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [] }) => {
                     <TableHead className="text-slate-200 font-semibold">Amount</TableHead>
                     <TableHead className="text-slate-200 font-semibold">Due Date</TableHead>
                     <TableHead className="text-slate-200 font-semibold">Status</TableHead>
+                    {onView && <TableHead className="text-slate-200 font-semibold">Actions</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -113,6 +128,19 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [] }) => {
                       <TableCell>
                         <Badge className={getStatusColor(invoice.status)}>{invoice.status}</Badge>
                       </TableCell>
+                      {onView && (
+                        <TableCell>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => onView(invoice)}
+                            className="h-8 gap-1"
+                          >
+                            <Eye className="h-4 w-4" />
+                            View
+                          </Button>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>

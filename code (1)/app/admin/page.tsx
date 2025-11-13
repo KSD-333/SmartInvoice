@@ -33,9 +33,12 @@ import {
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Download, Edit, Trash2, Search, FileText, Users, TrendingUp } from "lucide-react"
+import { Download, Edit, Trash2, Search, FileText, Users, TrendingUp, Eye, Upload } from "lucide-react"
 import { toast } from "sonner"
 import * as XLSX from "xlsx"
+import UploadInvoice from "@/components/invoices/upload-invoice"
+import AdminInvoiceCreate from "@/components/invoices/admin-invoice-create"
+import { InvoiceViewer } from "@/components/invoices/invoice-viewer"
 
 interface User {
   id: string
@@ -57,9 +60,14 @@ interface Invoice {
   description: string | null
   file_url: string | null
   created_at: string
+  comments: string | null
+  status_history: any[] | null
+  notification_sent: boolean | null
   profiles?: {
     email: string
     full_name: string
+    role: string
+    company_name: string | null
   }
 }
 
@@ -80,14 +88,25 @@ export default function AdminPanelPage() {
   const [filteredInvoices, setFilteredInvoices] = useState<Invoice[]>([])
   const [vendorStats, setVendorStats] = useState<VendorStats[]>([])
   const [searchTerm, setSearchTerm] = useState("")
-  const [statusFilter, setStatusFilter] = useState("unpaid")
+  const [userSearchTerm, setUserSearchTerm] = useState("")
+  const [filteredUsers, setFilteredUsers] = useState<User[]>([])
+  const [statusFilter, setStatusFilter] = useState("all")
   const [vendorFilter, setVendorFilter] = useState("all")
   const [editingInvoice, setEditingInvoice] = useState<Invoice | null>(null)
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null)
+  const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null)
+  const [isViewDialogOpen, setIsViewDialogOpen] = useState(false)
+  const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false)
+  const [summaryStats, setSummaryStats] = useState({
+    totalAmount: 0,
+    collected: 0,
+    remaining: 0,
+    overdue: 0,
+    pending: 0,
+  })
   const router = useRouter()
-  const supabase = createClient()
 
   useEffect(() => {
     checkAuth()
@@ -103,7 +122,22 @@ export default function AdminPanelPage() {
     filterInvoices()
   }, [invoices, searchTerm, statusFilter, vendorFilter])
 
+  useEffect(() => {
+    // Filter users by email or name
+    if (userSearchTerm.trim() === "") {
+      setFilteredUsers(users)
+    } else {
+      const filtered = users.filter(
+        (user) =>
+          user.email.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
+          user.full_name?.toLowerCase().includes(userSearchTerm.toLowerCase())
+      )
+      setFilteredUsers(filtered)
+    }
+  }, [users, userSearchTerm])
+
   const checkAuth = async () => {
+    const supabase = createClient()
     const {
       data: { user },
       error: authError,
@@ -129,6 +163,7 @@ export default function AdminPanelPage() {
   }
 
   const fetchAllData = async () => {
+    const supabase = createClient()
     // Fetch users
     const { data: usersData } = await supabase.from("profiles").select("*").order("created_at", { ascending: false })
     setUsers(usersData || [])
@@ -140,17 +175,67 @@ export default function AdminPanelPage() {
         *,
         profiles:user_id (
           email,
-          full_name
+          full_name,
+          role,
+          company_name
         )
       `)
       .order("created_at", { ascending: false })
 
-    setInvoices(invoicesData || [])
-
-    // Calculate vendor stats
+    // Auto-update overdue invoices
     if (invoicesData) {
-      const stats = calculateVendorStats(invoicesData)
-      setVendorStats(stats)
+      const today = new Date()
+      today.setHours(0, 0, 0, 0)
+      
+      const overdueUpdates = invoicesData
+        .filter((invoice) => {
+          const dueDate = new Date(invoice.due_date)
+          dueDate.setHours(0, 0, 0, 0)
+          return (
+            (invoice.status === "unpaid" || invoice.status === "pending") &&
+            dueDate < today
+          )
+        })
+        .map((invoice) => invoice.id)
+
+      if (overdueUpdates.length > 0) {
+        await supabase
+          .from("invoices")
+          .update({ status: "overdue" })
+          .in("id", overdueUpdates)
+        
+        // Re-fetch invoices after update
+        const { data: updatedInvoices } = await supabase
+          .from("invoices")
+          .select(`
+            *,
+            profiles:user_id (
+              email,
+              full_name,
+              role,
+              company_name
+            )
+          `)
+          .order("created_at", { ascending: false })
+        
+        setInvoices(updatedInvoices || [])
+        
+        // Calculate vendor stats with updated data
+        if (updatedInvoices) {
+          const stats = calculateVendorStats(updatedInvoices)
+          setVendorStats(stats)
+          calculateSummaryStats(updatedInvoices)
+        }
+      } else {
+        setInvoices(invoicesData || [])
+        
+        // Calculate vendor stats
+        if (invoicesData) {
+          const stats = calculateVendorStats(invoicesData)
+          setVendorStats(stats)
+          calculateSummaryStats(invoicesData)
+        }
+      }
     }
   }
 
@@ -183,6 +268,35 @@ export default function AdminPanelPage() {
     return Array.from(statsMap.values()).sort((a, b) => b.total_amount - a.total_amount)
   }
 
+  const calculateSummaryStats = (invoices: Invoice[]) => {
+    const stats = {
+      totalAmount: 0,
+      collected: 0,
+      remaining: 0,
+      overdue: 0,
+      pending: 0,
+    }
+
+    invoices.forEach((invoice) => {
+      const amount = Number(invoice.amount) || 0
+      stats.totalAmount += amount
+
+      if (invoice.status === "paid") {
+        stats.collected += amount
+      } else {
+        stats.remaining += amount
+        
+        if (invoice.status === "overdue") {
+          stats.overdue += amount
+        } else if (invoice.status === "pending") {
+          stats.pending += amount
+        }
+      }
+    })
+
+    setSummaryStats(stats)
+  }
+
   const filterInvoices = () => {
     let filtered = [...invoices]
 
@@ -210,6 +324,7 @@ export default function AdminPanelPage() {
   }
 
   const handleUpdateUserRole = async (userId: string, newRole: string) => {
+    const supabase = createClient()
     try {
       const { error } = await supabase.from("profiles").update({ role: newRole }).eq("id", userId)
 
@@ -222,6 +337,28 @@ export default function AdminPanelPage() {
     }
   }
 
+  const handleQuickStatusChange = async (invoiceId: string, newStatus: string) => {
+    const supabase = createClient()
+    try {
+      const { error } = await supabase
+        .from("invoices")
+        .update({ status: newStatus })
+        .eq("id", invoiceId)
+
+      if (error) throw error
+
+      await fetchAllData()
+      toast.success(`Invoice status updated to ${newStatus}`)
+    } catch (error: any) {
+      toast.error("Failed to update status: " + error.message)
+    }
+  }
+
+  const handleViewInvoice = (invoice: Invoice) => {
+    setViewingInvoice(invoice)
+    setIsViewDialogOpen(true)
+  }
+
   const handleEditInvoice = (invoice: Invoice) => {
     setEditingInvoice(invoice)
     setIsEditDialogOpen(true)
@@ -230,6 +367,7 @@ export default function AdminPanelPage() {
   const handleSaveInvoice = async () => {
     if (!editingInvoice) return
 
+    const supabase = createClient()
     try {
       const { error } = await supabase
         .from("invoices")
@@ -241,6 +379,7 @@ export default function AdminPanelPage() {
           invoice_date: editingInvoice.invoice_date,
           status: editingInvoice.status,
           description: editingInvoice.description,
+          comments: editingInvoice.comments,
         })
         .eq("id", editingInvoice.id)
 
@@ -257,6 +396,7 @@ export default function AdminPanelPage() {
   const handleDeleteInvoice = async () => {
     if (!deletingInvoiceId) return
 
+    const supabase = createClient()
     try {
       const { error } = await supabase.from("invoices").delete().eq("id", deletingInvoiceId)
 
@@ -271,6 +411,25 @@ export default function AdminPanelPage() {
     }
   }
 
+  const handleSendNotifications = async () => {
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
+      const response = await fetch(`${backendUrl}/send_bulk_notifications`, {
+        method: "POST",
+      })
+
+      if (!response.ok) {
+        throw new Error("Failed to send notifications")
+      }
+
+      const data = await response.json()
+      toast.success(`Successfully sent ${data.count} email notifications!`)
+      await fetchAllData() // Refresh to show notification_sent updates
+    } catch (error: any) {
+      toast.error("Failed to send notifications: " + error.message)
+    }
+  }
+
   const handleExportCSV = () => {
     const exportData = filteredInvoices.map((inv) => ({
       "Invoice Number": inv.invoice_number,
@@ -281,23 +440,34 @@ export default function AdminPanelPage() {
       "Invoice Date": inv.invoice_date,
       User: inv.profiles?.email || "",
       Description: inv.description || "",
+      Comments: inv.comments || "",
+      "Notification Sent": inv.notification_sent ? "Yes" : "No",
+      "Created At": new Date(inv.created_at).toLocaleString(),
     }))
 
     const ws = XLSX.utils.json_to_sheet(exportData)
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, "Invoices")
     XLSX.writeFile(wb, `invoices-${new Date().toISOString().split("T")[0]}.xlsx`)
-    toast.success("Export successful!")
+    toast.success("Excel export successful!")
   }
 
   const getStatusColor = (status: string) => {
     switch (status) {
+      case "submitted":
+        return "bg-blue-500/10 text-blue-500"
+      case "approved":
+        return "bg-cyan-500/10 text-cyan-500"
       case "paid":
         return "bg-green-500/10 text-green-500"
+      case "rejected":
+        return "bg-red-500/10 text-red-500"
       case "unpaid":
         return "bg-yellow-500/10 text-yellow-500"
       case "overdue":
-        return "bg-red-500/10 text-red-500"
+        return "bg-orange-500/10 text-orange-500"
+      case "pending":
+        return "bg-purple-500/10 text-purple-500"
       default:
         return "bg-slate-500/10 text-slate-500"
     }
@@ -341,6 +511,7 @@ export default function AdminPanelPage() {
             <Button
               variant="outline"
               onClick={async () => {
+                const supabase = createClient()
                 await supabase.auth.signOut()
                 router.push("/")
               }}
@@ -358,6 +529,10 @@ export default function AdminPanelPage() {
               <FileText className="h-4 w-4" />
               Invoices
             </TabsTrigger>
+            <TabsTrigger value="create" className="gap-2">
+              <Upload className="h-4 w-4" />
+              Create Invoice
+            </TabsTrigger>
             <TabsTrigger value="users" className="gap-2">
               <Users className="h-4 w-4" />
               Users
@@ -370,44 +545,69 @@ export default function AdminPanelPage() {
 
           {/* INVOICES TAB */}
           <TabsContent value="invoices" className="space-y-4">
-            {/* Stats Cards */}
-            <div className="grid md:grid-cols-4 gap-4">
-              <Card className="bg-slate-900 border-slate-700">
+            {/* Financial Summary Cards */}
+            <div className="grid md:grid-cols-5 gap-4">
+              <Card className="bg-gradient-to-br from-blue-900 to-blue-800 border-blue-700">
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm text-slate-300">Total Invoices</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold text-white">{invoices.length}</div>
-                </CardContent>
-              </Card>
-              <Card className="bg-slate-900 border-slate-700">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm text-slate-300">Unpaid</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold text-yellow-400">
-                    {invoices.filter((i) => i.status === "unpaid").length}
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="bg-slate-900 border-slate-700">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm text-slate-300">Paid</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold text-green-400">
-                    {invoices.filter((i) => i.status === "paid").length}
-                  </div>
-                </CardContent>
-              </Card>
-              <Card className="bg-slate-900 border-slate-700">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm text-slate-300">Total Amount</CardTitle>
+                  <CardTitle className="text-sm text-blue-100">Total Amount</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold text-white">
-                    ${invoices.reduce((sum, inv) => sum + Number(inv.amount), 0).toFixed(2)}
+                    ${summaryStats.totalAmount.toFixed(2)}
                   </div>
+                  <p className="text-xs text-blue-200 mt-1">{invoices.length} invoices</p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-green-900 to-green-800 border-green-700">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm text-green-100">Collected</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-white">
+                    ${summaryStats.collected.toFixed(2)}
+                  </div>
+                  <p className="text-xs text-green-200 mt-1">
+                    {invoices.filter((i) => i.status === "paid").length} paid
+                  </p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-yellow-900 to-yellow-800 border-yellow-700">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm text-yellow-100">Remaining</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-white">
+                    ${summaryStats.remaining.toFixed(2)}
+                  </div>
+                  <p className="text-xs text-yellow-200 mt-1">
+                    {invoices.filter((i) => i.status !== "paid").length} unpaid
+                  </p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-red-900 to-red-800 border-red-700">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm text-red-100">Overdue</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-white">
+                    ${summaryStats.overdue.toFixed(2)}
+                  </div>
+                  <p className="text-xs text-red-200 mt-1">
+                    {invoices.filter((i) => i.status === "overdue").length} invoices
+                  </p>
+                </CardContent>
+              </Card>
+              <Card className="bg-gradient-to-br from-purple-900 to-purple-800 border-purple-700">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm text-purple-100">Pending</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold text-white">
+                    ${summaryStats.pending.toFixed(2)}
+                  </div>
+                  <p className="text-xs text-purple-200 mt-1">
+                    {invoices.filter((i) => i.status === "pending").length} invoices
+                  </p>
                 </CardContent>
               </Card>
             </div>
@@ -415,10 +615,31 @@ export default function AdminPanelPage() {
             {/* Filters */}
             <Card className="bg-slate-900 border-slate-700">
               <CardHeader>
-                <CardTitle className="text-white">Invoice Management</CardTitle>
-                <CardDescription className="text-slate-400">
-                  Manage all invoices with filters and bulk operations
-                </CardDescription>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <CardTitle className="text-white">Invoice Management</CardTitle>
+                    <CardDescription className="text-slate-400">
+                      Manage all invoices with filters and bulk operations
+                    </CardDescription>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleSendNotifications}
+                      variant="outline"
+                      className="gap-2"
+                    >
+                      <TrendingUp className="h-4 w-4" />
+                      Send Notifications
+                    </Button>
+                    <Button
+                      onClick={() => setIsUploadDialogOpen(true)}
+                      className="bg-blue-600 hover:bg-blue-700 gap-2"
+                    >
+                      <Upload className="h-4 w-4" />
+                      Upload Invoice
+                    </Button>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex flex-wrap gap-4">
@@ -439,8 +660,11 @@ export default function AdminPanelPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="all">All Status</SelectItem>
-                      <SelectItem value="unpaid">Unpaid</SelectItem>
+                      <SelectItem value="submitted">Submitted</SelectItem>
+                      <SelectItem value="approved">Approved</SelectItem>
                       <SelectItem value="paid">Paid</SelectItem>
+                      <SelectItem value="rejected">Rejected</SelectItem>
+                      <SelectItem value="unpaid">Unpaid</SelectItem>
                       <SelectItem value="overdue">Overdue</SelectItem>
                       <SelectItem value="pending">Pending</SelectItem>
                     </SelectContent>
@@ -488,10 +712,31 @@ export default function AdminPanelPage() {
                       ) : (
                         filteredInvoices.map((invoice) => (
                           <TableRow key={invoice.id} className="border-slate-700 hover:bg-slate-800/50">
-                            <TableCell className="text-slate-100 font-mono">{invoice.invoice_number}</TableCell>
+                            <TableCell className="text-slate-100 font-mono">
+                              <div className="flex items-center gap-2">
+                                {invoice.invoice_number}
+                                {!invoice.file_url && (
+                                  <Badge className="bg-purple-500/10 text-purple-400 text-[10px] px-1.5 py-0" title="Admin Created">
+                                    ADMIN
+                                  </Badge>
+                                )}
+                              </div>
+                            </TableCell>
                             <TableCell className="text-slate-100">{invoice.vendor_name}</TableCell>
                             <TableCell className="text-slate-300 text-sm">
-                              {invoice.profiles?.email || "N/A"}
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-2">
+                                  {invoice.profiles?.email || "N/A"}
+                                  {invoice.profiles?.role === "vendor" && (
+                                    <Badge className="bg-green-500/10 text-green-400 text-[10px] px-1.5 py-0">
+                                      VENDOR
+                                    </Badge>
+                                  )}
+                                </div>
+                                {invoice.profiles?.company_name && (
+                                  <span className="text-xs text-slate-500">{invoice.profiles.company_name}</span>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell className="text-slate-100 font-semibold">
                               ${Number(invoice.amount).toFixed(2)}
@@ -500,15 +745,59 @@ export default function AdminPanelPage() {
                               {new Date(invoice.due_date).toLocaleDateString()}
                             </TableCell>
                             <TableCell>
-                              <Badge className={getStatusColor(invoice.status)}>{invoice.status}</Badge>
+                              <Select
+                                value={invoice.status}
+                                onValueChange={(value) => handleQuickStatusChange(invoice.id, value)}
+                              >
+                                <SelectTrigger className={`w-[140px] h-9 border ${getStatusColor(invoice.status).replace('bg-', 'border-').replace('/10', '/50')}`}>
+                                  <SelectValue>
+                                    <span className={`font-medium ${getStatusColor(invoice.status).split(' ')[1]}`}>
+                                      {invoice.status.toUpperCase()}
+                                    </span>
+                                  </SelectValue>
+                                </SelectTrigger>
+                                <SelectContent className="bg-slate-800 border-slate-600">
+                                  <SelectItem value="submitted" className="text-slate-300 focus:bg-slate-700">
+                                    <span className="text-blue-400">● Submitted</span>
+                                  </SelectItem>
+                                  <SelectItem value="approved" className="text-slate-300 focus:bg-slate-700">
+                                    <span className="text-cyan-400">● Approved</span>
+                                  </SelectItem>
+                                  <SelectItem value="paid" className="text-slate-300 focus:bg-slate-700">
+                                    <span className="text-green-400">● Paid</span>
+                                  </SelectItem>
+                                  <SelectItem value="rejected" className="text-slate-300 focus:bg-slate-700">
+                                    <span className="text-red-400">● Rejected</span>
+                                  </SelectItem>
+                                  <SelectItem value="unpaid" className="text-slate-300 focus:bg-slate-700">
+                                    <span className="text-yellow-400">● Unpaid</span>
+                                  </SelectItem>
+                                  <SelectItem value="overdue" className="text-slate-300 focus:bg-slate-700">
+                                    <span className="text-orange-400">● Overdue</span>
+                                  </SelectItem>
+                                  <SelectItem value="pending" className="text-slate-300 focus:bg-slate-700">
+                                    <span className="text-purple-400">● Pending</span>
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
                             </TableCell>
                             <TableCell>
-                              <div className="flex gap-2">
+                              <div className="flex gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleViewInvoice(invoice)}
+                                  className="h-8 w-8 p-0"
+                                  title="View Invoice"
+                                >
+                                  <Eye className="h-4 w-4" />
+                                </Button>
                                 <Button
                                   size="sm"
                                   variant="outline"
                                   onClick={() => handleEditInvoice(invoice)}
                                   className="h-8 w-8 p-0"
+                                  title="Edit Invoice"
                                 >
                                   <Edit className="h-4 w-4" />
                                 </Button>
@@ -520,6 +809,7 @@ export default function AdminPanelPage() {
                                     setIsDeleteDialogOpen(true)
                                   }}
                                   className="h-8 w-8 p-0"
+                                  title="Delete Invoice"
                                 >
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
@@ -535,14 +825,41 @@ export default function AdminPanelPage() {
             </Card>
           </TabsContent>
 
+          {/* CREATE INVOICE TAB */}
+          <TabsContent value="create" className="space-y-4">
+            <Card className="bg-slate-900 border-slate-700">
+              <CardHeader>
+                <CardTitle className="text-white">Create Invoice for Vendor</CardTitle>
+                <CardDescription className="text-slate-400">
+                  Admin can create invoices on behalf of any vendor in the system
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <AdminInvoiceCreate onCreateSuccess={fetchAllData} />
+              </CardContent>
+            </Card>
+          </TabsContent>
+
           {/* USERS TAB */}
           <TabsContent value="users">
             <Card className="bg-slate-900 border-slate-700">
               <CardHeader>
                 <CardTitle className="text-white">User Management</CardTitle>
-                <CardDescription className="text-slate-400">Total users: {users.length}</CardDescription>
+                <CardDescription className="text-slate-400">
+                  Total users: {users.length} | Vendors: {users.filter(u => u.role === 'vendor').length} | Admins: {users.filter(u => u.role === 'admin').length}
+                </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-4">
+                {/* Search Bar */}
+                <div className="relative max-w-md">
+                  <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+                  <Input
+                    placeholder="Search users by email or name..."
+                    value={userSearchTerm}
+                    onChange={(e) => setUserSearchTerm(e.target.value)}
+                    className="pl-10 bg-slate-800 border-slate-600 text-white"
+                  />
+                </div>
                 <div className="rounded-md border border-slate-700">
                   <Table>
                     <TableHeader className="bg-slate-800">
@@ -555,7 +872,14 @@ export default function AdminPanelPage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {users.map((user) => (
+                      {filteredUsers.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center py-8 text-slate-400">
+                            No users found
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        filteredUsers.map((user) => (
                         <TableRow key={user.id} className="border-slate-700 hover:bg-slate-800/50">
                           <TableCell className="text-slate-200">{user.email}</TableCell>
                           <TableCell className="text-slate-200">{user.full_name || "-"}</TableCell>
@@ -564,7 +888,7 @@ export default function AdminPanelPage() {
                               className={
                                 user.role === "admin"
                                   ? "bg-red-900/30 text-red-200"
-                                  : "bg-blue-900/30 text-blue-200"
+                                  : "bg-green-900/30 text-green-200"
                               }
                             >
                               {user.role.toUpperCase()}
@@ -574,18 +898,19 @@ export default function AdminPanelPage() {
                             {new Date(user.created_at).toLocaleDateString()}
                           </TableCell>
                           <TableCell>
-                            {user.role === "user" ? (
+                            {user.role === "vendor" ? (
                               <Button size="sm" onClick={() => handleUpdateUserRole(user.id, "admin")}>
                                 Make Admin
                               </Button>
                             ) : (
-                              <Button size="sm" variant="outline" onClick={() => handleUpdateUserRole(user.id, "user")}>
-                                Demote to User
+                              <Button size="sm" variant="outline" onClick={() => handleUpdateUserRole(user.id, "vendor")}>
+                                Demote to Vendor
                               </Button>
                             )}
                           </TableCell>
                         </TableRow>
-                      ))}
+                        ))
+                      )}
                     </TableBody>
                   </Table>
                 </div>
@@ -671,8 +996,8 @@ export default function AdminPanelPage() {
                 <Input
                   id="amount"
                   type="number"
-                  value={editingInvoice.amount}
-                  onChange={(e) => setEditingInvoice({ ...editingInvoice, amount: parseFloat(e.target.value) })}
+                  value={editingInvoice.amount || ""}
+                  onChange={(e) => setEditingInvoice({ ...editingInvoice, amount: parseFloat(e.target.value) || 0 })}
                   className="bg-slate-800 border-slate-600"
                 />
               </div>
@@ -708,8 +1033,11 @@ export default function AdminPanelPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="unpaid">Unpaid</SelectItem>
+                    <SelectItem value="submitted">Submitted</SelectItem>
+                    <SelectItem value="approved">Approved</SelectItem>
                     <SelectItem value="paid">Paid</SelectItem>
+                    <SelectItem value="rejected">Rejected</SelectItem>
+                    <SelectItem value="unpaid">Unpaid</SelectItem>
                     <SelectItem value="overdue">Overdue</SelectItem>
                     <SelectItem value="pending">Pending</SelectItem>
                   </SelectContent>
@@ -722,6 +1050,17 @@ export default function AdminPanelPage() {
                   value={editingInvoice.description || ""}
                   onChange={(e) => setEditingInvoice({ ...editingInvoice, description: e.target.value })}
                   className="bg-slate-800 border-slate-600"
+                  rows={3}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="comments">Comments / Notes</Label>
+                <Textarea
+                  id="comments"
+                  value={editingInvoice.comments || ""}
+                  onChange={(e) => setEditingInvoice({ ...editingInvoice, comments: e.target.value })}
+                  className="bg-slate-800 border-slate-600"
+                  placeholder="Add clarification or rejection notes..."
                   rows={3}
                 />
               </div>
@@ -755,6 +1094,33 @@ export default function AdminPanelPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Upload Invoice Dialog */}
+      <Dialog open={isUploadDialogOpen} onOpenChange={setIsUploadDialogOpen}>
+        <DialogContent className="max-w-2xl bg-slate-900 border-slate-700">
+          <DialogHeader>
+            <DialogTitle className="text-white">Upload New Invoice</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Upload invoice file - AI will automatically extract data
+            </DialogDescription>
+          </DialogHeader>
+          <UploadInvoice
+            onUploadSuccess={() => {
+              setIsUploadDialogOpen(false)
+              fetchAllData()
+            }}
+          />
+        </DialogContent>
+      </Dialog>
+
+      {/* View Invoice Dialog */}
+      {viewingInvoice && (
+        <InvoiceViewer
+          invoice={viewingInvoice}
+          open={isViewDialogOpen}
+          onOpenChange={setIsViewDialogOpen}
+        />
+      )}
     </div>
   )
 }
