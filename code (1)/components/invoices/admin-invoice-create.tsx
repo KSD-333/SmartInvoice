@@ -284,7 +284,6 @@ export default function AdminInvoiceCreate({ onCreateSuccess }: AdminInvoiceCrea
                   <SelectItem value="submitted" className="text-slate-300">Submitted</SelectItem>
                   <SelectItem value="approved" className="text-slate-300">Approved</SelectItem>
                   <SelectItem value="paid" className="text-slate-300">Paid</SelectItem>
-                  <SelectItem value="overdue" className="text-slate-300">Overdue</SelectItem>
                 </SelectContent>
               </Select>
             </div>

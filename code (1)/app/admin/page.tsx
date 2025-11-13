@@ -634,14 +634,14 @@ export default function AdminPanelPage() {
               </Card>
               <Card className="bg-gradient-to-br from-green-900 to-green-800 border-green-700">
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm text-green-100">Collected</CardTitle>
+                  <CardTitle className="text-sm text-green-100">Paid</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold text-white">
                     ${summaryStats.collected.toFixed(2)}
                   </div>
                   <p className="text-xs text-green-200 mt-1">
-                    {invoices.filter((i) => i.status === "paid").length} paid
+                    {invoices.filter((i) => i.status === "paid").length} invoices
                   </p>
                 </CardContent>
               </Card>
@@ -771,14 +771,7 @@ export default function AdminPanelPage() {
                         filteredInvoices.map((invoice) => (
                           <TableRow key={invoice.id} className="border-slate-700 hover:bg-slate-800/50">
                             <TableCell className="text-slate-100 font-mono">
-                              <div className="flex items-center gap-2">
-                                {invoice.invoice_number}
-                                {!invoice.file_url && (
-                                  <Badge className="bg-purple-500/10 text-purple-400 text-[10px] px-1.5 py-0" title="Admin Created">
-                                    ADMIN
-                                  </Badge>
-                                )}
-                              </div>
+                              {invoice.invoice_number}
                             </TableCell>
                             <TableCell className="text-slate-100">{invoice.vendor_name}</TableCell>
                             <TableCell className="text-slate-300 text-sm">

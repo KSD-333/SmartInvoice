@@ -61,7 +61,8 @@ interface InvoiceListProps {
 
 const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [], onView }) => {
   const totalAmount = invoices.reduce((acc, invoice) => acc + invoice.amount, 0)
-  const pendingAmount = invoices.reduce((acc, invoice) => acc + (invoice.status.toLowerCase() === "unpaid" || invoice.status.toLowerCase() === "pending" ? invoice.amount : 0), 0)
+  const paidAmount = invoices.reduce((acc, invoice) => acc + (invoice.status.toLowerCase() === "paid" ? invoice.amount : 0), 0)
+  const submittedAmount = invoices.reduce((acc, invoice) => acc + (invoice.status.toLowerCase() === "submitted" ? invoice.amount : 0), 0)
 
   return (
     <div className="space-y-6">
@@ -77,19 +78,19 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [], onView }) => {
 
         <Card className="bg-slate-800 border-slate-700">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-slate-300">Pending</CardTitle>
+            <CardTitle className="text-sm font-medium text-slate-300">Submitted</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-yellow-400">${pendingAmount.toFixed(2)}</div>
+            <div className="text-2xl font-bold text-blue-400">${submittedAmount.toFixed(2)}</div>
           </CardContent>
         </Card>
 
         <Card className="bg-slate-800 border-slate-700">
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-slate-300">Total Invoices</CardTitle>
+            <CardTitle className="text-sm font-medium text-slate-300">Paid</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-white">{invoices.length}</div>
+            <div className="text-2xl font-bold text-green-400">${paidAmount.toFixed(2)}</div>
           </CardContent>
         </Card>
       </div>
