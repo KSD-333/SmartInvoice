@@ -1,17 +1,22 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useEffect } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { backendAPI } from "@/lib/api/backend"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
 import { Upload, FileText, Loader2 } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 interface ExtractedData {
   invoice_number: string | null
@@ -21,41 +26,46 @@ interface ExtractedData {
   invoice_date: string | null
 }
 
-export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: () => void }) {
+interface User {
+  id: string
+  email: string
+  full_name?: string
+  company_name?: string
+}
+
+export default function AdminUploadInvoice({ onUploadSuccess }: { onUploadSuccess?: () => void }) {
   const [file, setFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const [extracting, setExtracting] = useState(false)
   const [preview, setPreview] = useState<string | null>(null)
   const [extractedData, setExtractedData] = useState<ExtractedData | null>(null)
-  const [userProfile, setUserProfile] = useState<{ full_name: string | null; email: string; id: string } | null>(null)
-  const [loadingProfile, setLoadingProfile] = useState(true)
+  const [vendors, setVendors] = useState<User[]>([])
+  const [selectedVendorId, setSelectedVendorId] = useState<string>("")
+  const [loadingVendors, setLoadingVendors] = useState(true)
 
-  // Fetch vendor profile on mount
   useEffect(() => {
-    const fetchProfile = async () => {
-      try {
-        const supabase = createClient()
-        const { data: { user } } = await supabase.auth.getUser()
-        
-        if (user) {
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("id, full_name, email")
-            .eq("id", user.id)
-            .single()
-          
-          if (profile) {
-            setUserProfile(profile)
-          }
-        }
-      } catch (error) {
-        console.error("Error fetching profile:", error)
-      } finally {
-        setLoadingProfile(false)
-      }
-    }
-    fetchProfile()
+    fetchVendors()
   }, [])
+
+  const fetchVendors = async () => {
+    setLoadingVendors(true)
+    try {
+      const supabase = createClient()
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("id, email, full_name, company_name")
+        .eq("role", "vendor")
+        .order("email")
+
+      if (error) throw error
+      setVendors(data || [])
+    } catch (error) {
+      console.error("Error fetching vendors:", error)
+      toast.error("Failed to load vendors")
+    } finally {
+      setLoadingVendors(false)
+    }
+  }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0]
@@ -85,7 +95,6 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
       const response = await backendAPI.extractInvoice(file)
       console.log('Extraction response:', response)
       
-      // Check if we got valid data
       const hasValidData = response.data.invoice_no || response.data.vendor_name || 
                           (response.data.amount && response.data.amount > 0)
       
@@ -96,7 +105,6 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
         toast.success("Invoice data extracted successfully!")
       }
       
-      // Map the response to our format
       const extractedData: ExtractedData = {
         invoice_number: response.data.invoice_no || `INV-${Date.now()}`,
         vendor_name: response.data.vendor_name || "Unknown Vendor",
@@ -111,7 +119,6 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
     } catch (error: any) {
       console.error("OCR extraction error:", error)
       toast.error("OCR extraction failed: " + (error.message || "Unknown error"))
-      // Set default values if extraction fails
       setExtractedData({
         invoice_number: `INV-${Date.now()}`,
         vendor_name: "Unknown Vendor",
@@ -126,12 +133,17 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault()
+    
+    if (!selectedVendorId) {
+      toast.error("Please select a vendor")
+      return
+    }
+    
     if (!file) {
       toast.error("Please select a file")
       return
     }
 
-    // Extract data first if not already extracted
     if (!extractedData) {
       await handleExtractData()
       return
@@ -140,31 +152,14 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
     setLoading(true)
     try {
       const supabase = createClient()
-      console.log("Getting user...")
-      const {
-        data: { user },
-      } = await supabase.auth.getUser()
-
-      if (!user) throw new Error("Not authenticated")
-      console.log("User authenticated:", user.id)
-
-      // Fetch user profile to get vendor name
-      const { data: profile, error: profileError } = await supabase
-        .from("profiles")
-        .select("full_name, email")
-        .eq("id", user.id)
-        .single()
-
-      if (profileError) {
-        console.error("Profile fetch error:", profileError)
-      }
-
-      const vendorName = profile?.full_name || profile?.email || "Unknown Vendor"
-      console.log("Using vendor name from profile:", vendorName)
+      
+      // Get selected vendor info
+      const vendor = vendors.find((v) => v.id === selectedVendorId)
+      const vendorName = vendor?.full_name || vendor?.company_name || vendor?.email || "Unknown Vendor"
 
       // Upload file to Supabase Storage
       const fileExt = file.name.split(".").pop()
-      const fileName = `${user.id}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`
+      const fileName = `${selectedVendorId}/${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`
       
       console.log("Uploading to storage:", fileName)
       toast.info("Uploading file to storage...")
@@ -189,7 +184,7 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
 
       // Check for duplicate invoice number
       console.log("Checking for duplicate invoice number:", extractedData.invoice_number)
-      const { data: existingInvoice, error: checkError } = await supabase
+      const { data: existingInvoice } = await supabase
         .from("invoices")
         .select("id, invoice_number")
         .eq("invoice_number", extractedData.invoice_number)
@@ -213,17 +208,17 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
         }
       }
 
-      // Create invoice record with extracted data
+      // Create invoice record for the selected vendor
       const invoiceData = {
-        user_id: user.id,
+        user_id: selectedVendorId,
         invoice_number: extractedData.invoice_number,
-        vendor_name: vendorName, // Use vendor's profile name instead of OCR extracted name
-        amount: extractedData.amount, // Keep the extracted amount
+        vendor_name: vendorName,
+        amount: extractedData.amount,
         due_date: extractedData.due_date,
         invoice_date: extractedData.invoice_date,
         file_url: publicUrl,
         status: status,
-        description: `Auto-uploaded from ${file.name}`,
+        description: `Admin uploaded from ${file.name}`,
       }
       
       console.log("Inserting invoice record:", invoiceData)
@@ -238,27 +233,17 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
       if (insertError) {
         console.error("=== DATABASE INSERT ERROR ===")
         console.error("Full error object:", JSON.stringify(insertError, null, 2))
-        console.error("Error code:", insertError.code)
-        console.error("Error message:", insertError.message)
-        console.error("Error details:", insertError.details)
-        console.error("Error hint:", insertError.hint)
-        console.error("Data attempted to insert:", JSON.stringify(invoiceData, null, 2))
-        
-        // Check if it's a policy error
-        if (insertError.code === '42501' || insertError.message?.includes('policy')) {
-          throw new Error("Permission denied: You don't have permission to insert invoices. Please check RLS policies in Supabase.")
-        }
-        
         throw new Error(`Database error: ${insertError.message || insertError.code || 'Unknown error'}`)
       }
       console.log("✅ Invoice saved successfully:", insertedData)
 
-      toast.success("Invoice uploaded and saved successfully!")
+      toast.success(`Invoice uploaded successfully for ${vendorName}!`)
       
       // Reset form
       setFile(null)
       setPreview(null)
       setExtractedData(null)
+      setSelectedVendorId("")
       
       // Reset file input
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
@@ -269,25 +254,7 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
       
     } catch (err: any) {
       console.error("Upload error:", err)
-      
-      // Better error message extraction
-      let errorMessage = "Upload failed"
-      
-      if (err?.message) {
-        errorMessage = err.message
-      } else if (err?.error_description) {
-        errorMessage = err.error_description
-      } else if (err?.error) {
-        errorMessage = err.error
-      } else if (typeof err === 'string') {
-        errorMessage = err
-      } else if (err?.details) {
-        errorMessage = err.details
-      } else {
-        errorMessage = "Upload failed. Please check your connection and try again."
-      }
-      
-      toast.error(errorMessage)
+      toast.error(err.message || "Upload failed. Please check your connection and try again.")
     } finally {
       setLoading(false)
     }
@@ -298,14 +265,49 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
       <CardHeader>
         <CardTitle className="text-white flex items-center gap-2">
           <Upload className="h-5 w-5" />
-          Upload Invoice
+          Admin Upload Invoice
         </CardTitle>
         <CardDescription className="text-slate-400">
-          Upload PDF or image - AI will extract invoice data automatically
+          Upload invoice for a vendor - AI will extract data automatically
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={handleUpload} className="space-y-6">
+          {/* Vendor Selection */}
+          <div className="space-y-2">
+            <Label htmlFor="vendor" className="text-slate-200">
+              Select Vendor *
+            </Label>
+            {loadingVendors ? (
+              <div className="flex items-center gap-2 p-2 text-slate-400">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading vendors...
+              </div>
+            ) : (
+              <Select value={selectedVendorId} onValueChange={setSelectedVendorId} required>
+                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                  <SelectValue placeholder="Choose a vendor..." />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-slate-600">
+                  {vendors.map((vendor) => (
+                    <SelectItem
+                      key={vendor.id}
+                      value={vendor.id}
+                      className="text-slate-300 focus:bg-slate-700"
+                    >
+                      <div className="flex flex-col">
+                        <span>{vendor.full_name || vendor.email}</span>
+                        {vendor.company_name && (
+                          <span className="text-xs text-slate-500">{vendor.company_name}</span>
+                        )}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
           {/* File Upload */}
           <div className="space-y-2">
             <Label htmlFor="file" className="text-slate-200">
@@ -358,36 +360,23 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
             </div>
           )}
 
-          {/* Vendor Name Display */}
-          {userProfile && (
-            <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30">
-              <Label className="text-slate-300 text-xs">Your Invoice Will Be Saved As</Label>
-              <p className="text-blue-400 font-semibold mt-1">
-                {userProfile.full_name || userProfile.email}
-              </p>
-              <p className="text-slate-400 text-xs mt-0.5">{userProfile.email}</p>
-            </div>
-          )}
-
           {/* Extracted Data Preview */}
           {extractedData && (
             <div className="space-y-3 p-4 bg-slate-800 rounded-lg border border-slate-600">
-              <Label className="text-slate-200">Extracted Data from Invoice</Label>
+              <Label className="text-slate-200">Extracted Data</Label>
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div>
                   <span className="text-slate-400">Invoice #:</span>
                   <p className="text-slate-200 font-medium">{extractedData.invoice_number || "N/A"}</p>
                 </div>
                 <div>
+                  <span className="text-slate-400">Extracted Vendor:</span>
+                  <p className="text-slate-200 font-medium">{extractedData.vendor_name || "N/A"}</p>
+                </div>
+                <div>
                   <span className="text-slate-400">Amount:</span>
                   <p className="text-slate-200 font-medium">
                     ${extractedData.amount !== null ? extractedData.amount.toFixed(2) : "0.00"}
-                  </p>
-                </div>
-                <div>
-                  <span className="text-slate-400">Invoice Date:</span>
-                  <p className="text-slate-200 font-medium">
-                    {extractedData.invoice_date ? new Date(extractedData.invoice_date).toLocaleDateString() : "N/A"}
                   </p>
                 </div>
                 <div>
@@ -397,7 +386,6 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
                   </p>
                 </div>
               </div>
-              <p className="text-xs text-slate-500 mt-2">Vendor name will be set to: <span className="text-blue-400 font-medium">{userProfile?.full_name || userProfile?.email || "Your Profile Name"}</span></p>
             </div>
           )}
 
@@ -407,7 +395,7 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
               <Button
                 type="button"
                 onClick={handleExtractData}
-                disabled={extracting || loading}
+                disabled={extracting || loading || !selectedVendorId}
                 className="flex-1 bg-purple-600 hover:bg-purple-700"
               >
                 {extracting ? (
@@ -427,7 +415,7 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
             {extractedData && (
               <Button
                 type="submit"
-                disabled={loading || extracting}
+                disabled={loading || extracting || !selectedVendorId}
                 className="flex-1 bg-blue-600 hover:bg-blue-700"
               >
                 {loading ? (

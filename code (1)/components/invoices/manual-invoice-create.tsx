@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -23,6 +23,9 @@ interface ManualInvoiceCreateProps {
 
 export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCreateProps) {
   const [loading, setLoading] = useState(false)
+  const [loadingProfile, setLoadingProfile] = useState(true)
+  const [userRole, setUserRole] = useState<string | null>(null)
+  const [userProfile, setUserProfile] = useState<{ full_name: string | null; email: string } | null>(null)
   const [formData, setFormData] = useState({
     vendor_name: "",
     invoice_number: "",
@@ -32,6 +35,40 @@ export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCr
     description: "",
     status: "submitted" as string,
   })
+
+  // Fetch user profile and role on mount
+  useEffect(() => {
+    const fetchUserProfile = async () => {
+      try {
+        const supabase = createClient()
+        const { data: { user } } = await supabase.auth.getUser()
+        
+        if (user) {
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("full_name, email, role")
+            .eq("id", user.id)
+            .single()
+          
+          if (profile) {
+            setUserProfile({ full_name: profile.full_name, email: profile.email })
+            setUserRole(profile.role)
+            
+            // Auto-fill vendor name for vendors (not admins)
+            if (profile.role !== "admin") {
+              const vendorName = profile.full_name || profile.email
+              setFormData(prev => ({ ...prev, vendor_name: vendorName }))
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching profile:", error)
+      } finally {
+        setLoadingProfile(false)
+      }
+    }
+    fetchUserProfile()
+  }, [])
 
   const handleInputChange = (field: string, value: string) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -80,6 +117,17 @@ export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCr
         throw new Error("Not authenticated")
       }
 
+      // Check for duplicate invoice number
+      const { data: existingInvoice } = await supabase
+        .from("invoices")
+        .select("id, invoice_number")
+        .eq("invoice_number", formData.invoice_number.trim())
+        .single()
+
+      if (existingInvoice) {
+        throw new Error(`Invoice number "${formData.invoice_number}" already exists! Please use a unique invoice number.`)
+      }
+
       // Insert invoice into database
       const { data, error } = await supabase.from("invoices").insert([
         {
@@ -126,7 +174,7 @@ export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCr
 
   const handleReset = () => {
     setFormData({
-      vendor_name: "",
+      vendor_name: userRole !== "admin" ? (userProfile?.full_name || userProfile?.email || "") : "",
       invoice_number: "",
       amount: "",
       invoice_date: "",
@@ -152,22 +200,53 @@ export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCr
         </div>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-6">
+        {loadingProfile ? (
+          <div className="flex items-center justify-center py-8">
+            <div className="text-slate-400">Loading form...</div>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {/* Vendor Info Display for Non-Admins */}
+            {userRole && userRole !== "admin" && userProfile && (
+            <div className="p-4 bg-blue-500/10 rounded-lg border border-blue-500/30">
+              <Label className="text-slate-300 text-sm">Your Invoice Will Be Created As</Label>
+              <p className="text-blue-400 font-semibold text-lg mt-1">
+                {userProfile.full_name || userProfile.email}
+              </p>
+              <p className="text-slate-400 text-xs mt-0.5">{userProfile.email}</p>
+            </div>
+          )}
+
           {/* Vendor and Invoice Number */}
           <div className="grid md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="vendor_name" className="text-slate-200">
-                Vendor Name <span className="text-red-400">*</span>
-              </Label>
-              <Input
-                id="vendor_name"
-                placeholder="Enter vendor/company name"
-                value={formData.vendor_name}
-                onChange={(e) => handleInputChange("vendor_name", e.target.value)}
-                className="bg-slate-800 border-slate-600 text-white"
-                required
-              />
-            </div>
+            {userRole === "admin" ? (
+              <div className="space-y-2">
+                <Label htmlFor="vendor_name" className="text-slate-200">
+                  Vendor Name <span className="text-red-400">*</span>
+                </Label>
+                <Input
+                  id="vendor_name"
+                  placeholder="Enter vendor/company name"
+                  value={formData.vendor_name}
+                  onChange={(e) => handleInputChange("vendor_name", e.target.value)}
+                  className="bg-slate-800 border-slate-600 text-white"
+                  required
+                />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <Label htmlFor="vendor_name" className="text-slate-200">
+                  Vendor Name <span className="text-slate-400 text-xs">(Auto-filled)</span>
+                </Label>
+                <Input
+                  id="vendor_name"
+                  value={formData.vendor_name}
+                  className="bg-slate-700 border-slate-600 text-slate-400 cursor-not-allowed"
+                  disabled
+                  readOnly
+                />
+              </div>
+            )}
             <div className="space-y-2">
               <Label htmlFor="invoice_number" className="text-slate-200">
                 Invoice Number <span className="text-red-400">*</span>
@@ -184,7 +263,7 @@ export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCr
           </div>
 
           {/* Amount and Status */}
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className={userRole === "admin" ? "grid md:grid-cols-2 gap-4" : "space-y-4"}>
             <div className="space-y-2">
               <Label htmlFor="amount" className="text-slate-200">
                 Amount <span className="text-red-400">*</span>
@@ -199,23 +278,27 @@ export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCr
                 onChange={(e) => handleInputChange("amount", e.target.value)}
                 className="bg-slate-800 border-slate-600 text-white"
                 required
+                disabled={loadingProfile}
               />
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="status" className="text-slate-200">
-                Status
-              </Label>
-              <Select value={formData.status} onValueChange={(value) => handleInputChange("status", value)}>
-                <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="submitted">Submitted</SelectItem>
-                  <SelectItem value="unpaid">Unpaid</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            {userRole === "admin" && (
+              <div className="space-y-2">
+                <Label htmlFor="status" className="text-slate-200">
+                  Status
+                </Label>
+                <Select value={formData.status} onValueChange={(value) => handleInputChange("status", value)}>
+                  <SelectTrigger className="bg-slate-800 border-slate-600 text-white">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="submitted">Submitted</SelectItem>
+                    <SelectItem value="approved">Approved</SelectItem>
+                    <SelectItem value="paid">Paid</SelectItem>
+                    <SelectItem value="overdue">Overdue</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
 
           {/* Dates */}
@@ -267,6 +350,7 @@ export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCr
           <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4">
             <p className="text-sm text-blue-200">
               <strong>Note:</strong> Manual invoices don't have attached files. You can upload a file later if needed.
+              {userRole !== "admin" && " Status will be set to 'Submitted' automatically."}
             </p>
           </div>
 
@@ -290,6 +374,7 @@ export default function ManualInvoiceCreate({ onCreateSuccess }: ManualInvoiceCr
             </Button>
           </div>
         </form>
+        )}
       </CardContent>
     </Card>
   )

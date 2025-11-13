@@ -100,6 +100,18 @@ export default function AdminInvoiceCreate({ onCreateSuccess }: AdminInvoiceCrea
     try {
       const supabase = createClient()
       
+      // Check for duplicate invoice number
+      const { data: existingInvoice } = await supabase
+        .from("invoices")
+        .select("id, invoice_number")
+        .eq("invoice_number", formData.invoice_number)
+        .single()
+
+      if (existingInvoice) {
+        toast.error(`Invoice number "${formData.invoice_number}" already exists! Please use a unique invoice number.`)
+        return
+      }
+      
       // Create invoice on behalf of vendor
       const { error } = await supabase.from("invoices").insert({
         user_id: formData.user_id,
@@ -272,8 +284,7 @@ export default function AdminInvoiceCreate({ onCreateSuccess }: AdminInvoiceCrea
                   <SelectItem value="submitted" className="text-slate-300">Submitted</SelectItem>
                   <SelectItem value="approved" className="text-slate-300">Approved</SelectItem>
                   <SelectItem value="paid" className="text-slate-300">Paid</SelectItem>
-                  <SelectItem value="pending" className="text-slate-300">Pending</SelectItem>
-                  <SelectItem value="unpaid" className="text-slate-300">Unpaid</SelectItem>
+                  <SelectItem value="overdue" className="text-slate-300">Overdue</SelectItem>
                 </SelectContent>
               </Select>
             </div>

@@ -33,10 +33,11 @@ import {
 } from "@/components/ui/dialog"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Download, Edit, Trash2, Search, FileText, Users, TrendingUp, Eye, Upload } from "lucide-react"
+import { Download, Edit, Trash2, Search, FileText, Users, TrendingUp, Eye, Upload, Bell, MessageSquare } from "lucide-react"
 import { toast } from "sonner"
 import * as XLSX from "xlsx"
 import UploadInvoice from "@/components/invoices/upload-invoice"
+import AdminUploadInvoice from "@/components/invoices/admin-upload-invoice"
 import AdminInvoiceCreate from "@/components/invoices/admin-invoice-create"
 import { InvoiceViewer } from "@/components/invoices/invoice-viewer"
 
@@ -72,7 +73,9 @@ interface Invoice {
 }
 
 interface VendorStats {
+  user_id: string
   vendor_name: string
+  vendor_email: string
   invoice_count: number
   total_amount: number
   paid_amount: number
@@ -96,6 +99,9 @@ export default function AdminPanelPage() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false)
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
   const [deletingInvoiceId, setDeletingInvoiceId] = useState<string | null>(null)
+  const [isCommentDialogOpen, setIsCommentDialogOpen] = useState(false)
+  const [commentingInvoice, setCommentingInvoice] = useState<Invoice | null>(null)
+  const [commentText, setCommentText] = useState("")
   const [viewingInvoice, setViewingInvoice] = useState<Invoice | null>(null)
   const [isViewDialogOpen, setIsViewDialogOpen] = useState(false)
   const [isUploadDialogOpen, setIsUploadDialogOpen] = useState(false)
@@ -243,10 +249,16 @@ export default function AdminPanelPage() {
     const statsMap = new Map<string, VendorStats>()
 
     invoices.forEach((invoice) => {
-      const vendor = invoice.vendor_name
-      if (!statsMap.has(vendor)) {
-        statsMap.set(vendor, {
-          vendor_name: vendor,
+      // Group by user_id to avoid duplicates
+      const userId = invoice.user_id
+      const vendorName = invoice.profiles?.full_name || invoice.vendor_name || "Unknown"
+      const vendorEmail = invoice.profiles?.email || "N/A"
+      
+      if (!statsMap.has(userId)) {
+        statsMap.set(userId, {
+          user_id: userId,
+          vendor_name: vendorName,
+          vendor_email: vendorEmail,
           invoice_count: 0,
           total_amount: 0,
           paid_amount: 0,
@@ -254,7 +266,7 @@ export default function AdminPanelPage() {
         })
       }
 
-      const stats = statsMap.get(vendor)!
+      const stats = statsMap.get(userId)!
       stats.invoice_count++
       stats.total_amount += Number(invoice.amount)
 
@@ -390,6 +402,68 @@ export default function AdminPanelPage() {
       toast.success("Invoice updated successfully")
     } catch (error: any) {
       toast.error("Failed to update invoice: " + error.message)
+    }
+  }
+
+  const handleSendNotification = async (invoice: Invoice) => {
+    try {
+      const supabase = createClient()
+      
+      // Create notification for the vendor
+      const { error } = await supabase.from("notifications").insert({
+        user_id: invoice.user_id,
+        invoice_id: invoice.id,
+        title: `Invoice ${invoice.invoice_number} Status Update`,
+        message: `Your invoice status is: ${invoice.status}`,
+        type: "status_change",
+      })
+
+      if (error) throw error
+
+      toast.success("Notification sent to vendor!")
+    } catch (error: any) {
+      console.error("Error sending notification:", error)
+      toast.error("Failed to send notification")
+    }
+  }
+
+  const handleAddComment = async () => {
+    if (!commentingInvoice || !commentText.trim()) {
+      toast.error("Please enter a comment")
+      return
+    }
+
+    try {
+      const supabase = createClient()
+      const { data: { user } } = await supabase.auth.getUser()
+      
+      if (!user) throw new Error("Not authenticated")
+
+      // Add comment to invoice_comments table
+      const { error } = await supabase.from("invoice_comments").insert({
+        invoice_id: commentingInvoice.id,
+        user_id: user.id,
+        comment: commentText.trim(),
+      })
+
+      if (error) throw error
+
+      // Create notification for vendor
+      await supabase.from("notifications").insert({
+        user_id: commentingInvoice.user_id,
+        invoice_id: commentingInvoice.id,
+        title: `New Comment on Invoice ${commentingInvoice.invoice_number}`,
+        message: commentText.trim().substring(0, 100),
+        type: "comment",
+      })
+
+      toast.success("Comment added successfully!")
+      setIsCommentDialogOpen(false)
+      setCommentText("")
+      setCommentingInvoice(null)
+    } catch (error: any) {
+      console.error("Error adding comment:", error)
+      toast.error("Failed to add comment")
     }
   }
 
@@ -597,19 +671,6 @@ export default function AdminPanelPage() {
                   </p>
                 </CardContent>
               </Card>
-              <Card className="bg-gradient-to-br from-purple-900 to-purple-800 border-purple-700">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm text-purple-100">Pending</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold text-white">
-                    ${summaryStats.pending.toFixed(2)}
-                  </div>
-                  <p className="text-xs text-purple-200 mt-1">
-                    {invoices.filter((i) => i.status === "pending").length} invoices
-                  </p>
-                </CardContent>
-              </Card>
             </div>
 
             {/* Filters */}
@@ -663,10 +724,7 @@ export default function AdminPanelPage() {
                       <SelectItem value="submitted">Submitted</SelectItem>
                       <SelectItem value="approved">Approved</SelectItem>
                       <SelectItem value="paid">Paid</SelectItem>
-                      <SelectItem value="rejected">Rejected</SelectItem>
-                      <SelectItem value="unpaid">Unpaid</SelectItem>
                       <SelectItem value="overdue">Overdue</SelectItem>
-                      <SelectItem value="pending">Pending</SelectItem>
                     </SelectContent>
                   </Select>
                   <Select value={vendorFilter} onValueChange={setVendorFilter}>
@@ -749,12 +807,8 @@ export default function AdminPanelPage() {
                                 value={invoice.status}
                                 onValueChange={(value) => handleQuickStatusChange(invoice.id, value)}
                               >
-                                <SelectTrigger className={`w-[140px] h-9 border ${getStatusColor(invoice.status).replace('bg-', 'border-').replace('/10', '/50')}`}>
-                                  <SelectValue>
-                                    <span className={`font-medium ${getStatusColor(invoice.status).split(' ')[1]}`}>
-                                      {invoice.status.toUpperCase()}
-                                    </span>
-                                  </SelectValue>
+                                <SelectTrigger className="w-[140px] h-9 bg-slate-800 border-slate-600 text-white">
+                                  <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent className="bg-slate-800 border-slate-600">
                                   <SelectItem value="submitted" className="text-slate-300 focus:bg-slate-700">
@@ -766,17 +820,8 @@ export default function AdminPanelPage() {
                                   <SelectItem value="paid" className="text-slate-300 focus:bg-slate-700">
                                     <span className="text-green-400">● Paid</span>
                                   </SelectItem>
-                                  <SelectItem value="rejected" className="text-slate-300 focus:bg-slate-700">
-                                    <span className="text-red-400">● Rejected</span>
-                                  </SelectItem>
-                                  <SelectItem value="unpaid" className="text-slate-300 focus:bg-slate-700">
-                                    <span className="text-yellow-400">● Unpaid</span>
-                                  </SelectItem>
                                   <SelectItem value="overdue" className="text-slate-300 focus:bg-slate-700">
-                                    <span className="text-orange-400">● Overdue</span>
-                                  </SelectItem>
-                                  <SelectItem value="pending" className="text-slate-300 focus:bg-slate-700">
-                                    <span className="text-purple-400">● Pending</span>
+                                    <span className="text-red-400">● Overdue</span>
                                   </SelectItem>
                                 </SelectContent>
                               </Select>
@@ -791,6 +836,27 @@ export default function AdminPanelPage() {
                                   title="View Invoice"
                                 >
                                   <Eye className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => handleSendNotification(invoice)}
+                                  className="h-8 w-8 p-0 border-blue-500/50 hover:bg-blue-500/20"
+                                  title="Send Notification"
+                                >
+                                  <Bell className="h-4 w-4 text-blue-400" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setCommentingInvoice(invoice)
+                                    setIsCommentDialogOpen(true)
+                                  }}
+                                  className="h-8 w-8 p-0 border-purple-500/50 hover:bg-purple-500/20"
+                                  title="Add Comment"
+                                >
+                                  <MessageSquare className="h-4 w-4 text-purple-400" />
                                 </Button>
                                 <Button
                                   size="sm"
@@ -932,7 +998,7 @@ export default function AdminPanelPage() {
                   <Table>
                     <TableHeader className="bg-slate-800">
                       <TableRow className="border-slate-700 hover:bg-transparent">
-                        <TableHead className="text-slate-200">Vendor Name</TableHead>
+                        <TableHead className="text-slate-200">Vendor</TableHead>
                         <TableHead className="text-slate-200">Invoice Count</TableHead>
                         <TableHead className="text-slate-200">Total Amount</TableHead>
                         <TableHead className="text-slate-200">Paid</TableHead>
@@ -941,8 +1007,11 @@ export default function AdminPanelPage() {
                     </TableHeader>
                     <TableBody>
                       {vendorStats.map((vendor) => (
-                        <TableRow key={vendor.vendor_name} className="border-slate-700 hover:bg-slate-800/50">
-                          <TableCell className="text-slate-100 font-medium">{vendor.vendor_name}</TableCell>
+                        <TableRow key={vendor.user_id} className="border-slate-700 hover:bg-slate-800/50">
+                          <TableCell className="text-slate-100">
+                            <div className="font-medium">{vendor.vendor_name}</div>
+                            <div className="text-sm text-slate-400">{vendor.vendor_email}</div>
+                          </TableCell>
                           <TableCell className="text-slate-200">
                             <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/50">
                               {vendor.invoice_count} invoices
@@ -1036,10 +1105,7 @@ export default function AdminPanelPage() {
                     <SelectItem value="submitted">Submitted</SelectItem>
                     <SelectItem value="approved">Approved</SelectItem>
                     <SelectItem value="paid">Paid</SelectItem>
-                    <SelectItem value="rejected">Rejected</SelectItem>
-                    <SelectItem value="unpaid">Unpaid</SelectItem>
                     <SelectItem value="overdue">Overdue</SelectItem>
-                    <SelectItem value="pending">Pending</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1099,12 +1165,12 @@ export default function AdminPanelPage() {
       <Dialog open={isUploadDialogOpen} onOpenChange={setIsUploadDialogOpen}>
         <DialogContent className="max-w-2xl bg-slate-900 border-slate-700">
           <DialogHeader>
-            <DialogTitle className="text-white">Upload New Invoice</DialogTitle>
+            <DialogTitle className="text-white">Upload Invoice for Vendor</DialogTitle>
             <DialogDescription className="text-slate-400">
-              Upload invoice file - AI will automatically extract data
+              Select vendor and upload invoice - AI will automatically extract data
             </DialogDescription>
           </DialogHeader>
-          <UploadInvoice
+          <AdminUploadInvoice
             onUploadSuccess={() => {
               setIsUploadDialogOpen(false)
               fetchAllData()
@@ -1121,6 +1187,71 @@ export default function AdminPanelPage() {
           onOpenChange={setIsViewDialogOpen}
         />
       )}
+
+      {/* Add Comment Dialog */}
+      <Dialog open={isCommentDialogOpen} onOpenChange={setIsCommentDialogOpen}>
+        <DialogContent className="bg-slate-900 border-slate-700 text-white">
+          <DialogHeader>
+            <DialogTitle>Add Comment to Invoice</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              {commentingInvoice && `Add a comment to invoice ${commentingInvoice.invoice_number}`}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {commentingInvoice && (
+              <div className="p-3 bg-slate-800 rounded-lg border border-slate-700">
+                <div className="text-sm text-slate-300">
+                  <span className="font-semibold">Invoice:</span> {commentingInvoice.invoice_number}
+                </div>
+                <div className="text-sm text-slate-300">
+                  <span className="font-semibold">Vendor:</span> {commentingInvoice.vendor_name}
+                </div>
+                <div className="text-sm text-slate-300">
+                  <span className="font-semibold">Status:</span>{" "}
+                  <Badge className={getStatusColor(commentingInvoice.status)}>
+                    {commentingInvoice.status}
+                  </Badge>
+                </div>
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="comment" className="text-slate-200">
+                Comment / Reason
+              </Label>
+              <Textarea
+                id="comment"
+                value={commentText}
+                onChange={(e) => setCommentText(e.target.value)}
+                className="bg-slate-800 border-slate-600 text-white min-h-[120px]"
+                placeholder="Enter reason for status change or additional information..."
+                rows={5}
+              />
+              <p className="text-xs text-slate-400">
+                This comment will be visible to the vendor and saved in the invoice history.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button 
+              variant="outline" 
+              onClick={() => {
+                setIsCommentDialogOpen(false)
+                setCommentText("")
+                setCommentingInvoice(null)
+              }}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleAddComment}
+              className="bg-purple-600 hover:bg-purple-700"
+              disabled={!commentText.trim()}
+            >
+              Add Comment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
