@@ -104,14 +104,57 @@ export default function DashboardPage() {
     }
     
     // Vendors see only their own invoices, admins see all
-    let query = supabase.from("invoices").select("*")
+    // Fetch invoices with latest comment
+    let query = supabase
+      .from("invoices")
+      .select(`
+        *,
+        invoice_comments!inner(
+          comment,
+          created_at,
+          user_id
+        )
+      `)
     
     if (userRole !== "admin") {
       // All non-admin users are vendors - show only their invoices
       query = query.eq("user_id", user.id)
     }
     
-    const { data: invoicesData } = await query.order("created_at", { ascending: false })
+    const { data: invoicesWithComments } = await query.order("created_at", { ascending: false })
+    
+    // Also fetch invoices without comments
+    let queryWithoutComments = supabase.from("invoices").select("*")
+    if (userRole !== "admin") {
+      queryWithoutComments = queryWithoutComments.eq("user_id", user.id)
+    }
+    const { data: invoicesWithoutComments } = await queryWithoutComments.order("created_at", { ascending: false })
+    
+    // Merge and deduplicate
+    const invoiceMap = new Map()
+    
+    // Add invoices without comments first
+    invoicesWithoutComments?.forEach(inv => {
+      invoiceMap.set(inv.id, { ...inv, latest_comment: null })
+    })
+    
+    // Update with invoices that have comments (get latest comment)
+    invoicesWithComments?.forEach(inv => {
+      const comments = Array.isArray(inv.invoice_comments) ? inv.invoice_comments : [inv.invoice_comments]
+      const latestComment = comments.sort((a: any, b: any) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      )[0]
+      
+      invoiceMap.set(inv.id, {
+        ...inv,
+        invoice_comments: undefined, // Remove the nested array
+        latest_comment: latestComment
+      })
+    })
+    
+    const invoicesData = Array.from(invoiceMap.values()).sort((a, b) => 
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    )
     
     // Auto-update overdue invoices
     if (invoicesData) {

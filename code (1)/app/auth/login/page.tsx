@@ -24,12 +24,42 @@ export default function LoginPage() {
 
     try {
       const supabase = createClient()
-      const { error: authError } = await supabase.auth.signInWithPassword({
+      const { data, error: authError } = await supabase.auth.signInWithPassword({
         email,
         password,
       })
 
       if (authError) throw authError
+
+      if (data?.user) {
+        // Check if profile exists, create if missing
+        const { data: profile, error: profileError } = await supabase
+          .from("profiles")
+          .select("id")
+          .eq("id", data.user.id)
+          .single()
+
+        if (profileError && profileError.code === 'PGRST116') {
+          // Profile doesn't exist, create it
+          console.log("Profile not found, creating...")
+          const { error: createError } = await supabase
+            .from("profiles")
+            .insert({
+              id: data.user.id,
+              email: data.user.email,
+              full_name: data.user.user_metadata?.full_name || data.user.email?.split('@')[0] || 'User',
+              company_name: data.user.user_metadata?.company_name || null,
+              role: "vendor"
+            })
+
+          if (createError) {
+            console.error("Failed to create profile:", createError)
+            // Continue anyway, profile will be created by dashboard
+          } else {
+            console.log("Profile created successfully on login")
+          }
+        }
+      }
 
       router.push("/dashboard")
     } catch (err) {

@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Eye } from "lucide-react"
+import { Eye, MessageSquare } from "lucide-react"
 
 // Helper function to get status color
 const getStatusColor = (status: string) => {
@@ -50,6 +50,8 @@ interface Invoice {
   file_url?: string | null
   invoice_date?: string
   description?: string | null
+  comments?: string | null
+  latest_comment?: { comment: string; created_at: string; user_id: string } | null
 }
 
 interface InvoiceListProps {
@@ -113,6 +115,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [], onView }) => {
                     <TableHead className="text-slate-200 font-semibold">Amount</TableHead>
                     <TableHead className="text-slate-200 font-semibold">Due Date</TableHead>
                     <TableHead className="text-slate-200 font-semibold">Status</TableHead>
+                    <TableHead className="text-slate-200 font-semibold">Comments/Reason</TableHead>
                     {onView && <TableHead className="text-slate-200 font-semibold">Actions</TableHead>}
                   </TableRow>
                 </TableHeader>
@@ -127,6 +130,25 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [], onView }) => {
                       </TableCell>
                       <TableCell>
                         <Badge className={getStatusColor(invoice.status)}>{invoice.status}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        {invoice.comments || invoice.latest_comment ? (
+                          <div className="flex items-start gap-2 max-w-xs">
+                            <MessageSquare className="h-4 w-4 text-purple-400 mt-0.5 flex-shrink-0" />
+                            <div className="text-sm">
+                              <p className="text-slate-300 line-clamp-2">
+                                {invoice.comments || invoice.latest_comment?.comment}
+                              </p>
+                              {invoice.latest_comment?.created_at && (
+                                <p className="text-xs text-slate-500 mt-0.5">
+                                  {new Date(invoice.latest_comment.created_at).toLocaleDateString()}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 text-sm">No comments</span>
+                        )}
                       </TableCell>
                       {onView && (
                         <TableCell>
