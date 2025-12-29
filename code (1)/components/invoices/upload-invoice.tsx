@@ -11,7 +11,9 @@ import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
-import { Upload, FileText, Loader2 } from "lucide-react"
+import { Upload, FileText, Loader2, Building2 } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Textarea } from "@/components/ui/textarea"
 
 interface ExtractedData {
   invoice_number: string | null
@@ -19,6 +21,11 @@ interface ExtractedData {
   amount: number | null
   due_date: string | null
   invoice_date: string | null
+}
+
+interface Company {
+  id: string
+  name: string
 }
 
 export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: () => void }) {
@@ -29,15 +36,19 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
   const [extractedData, setExtractedData] = useState<ExtractedData | null>(null)
   const [userProfile, setUserProfile] = useState<{ full_name: string | null; email: string; id: string } | null>(null)
   const [loadingProfile, setLoadingProfile] = useState(true)
+  const [companies, setCompanies] = useState<Company[]>([])
+  const [selectedCompany, setSelectedCompany] = useState<string>("")
+  const [notes, setNotes] = useState<string>("")
 
-  // Fetch vendor profile on mount
+  // Fetch vendor profile and approved companies on mount
   useEffect(() => {
-    const fetchProfile = async () => {
+    const fetchData = async () => {
       try {
         const supabase = createClient()
         const { data: { user } } = await supabase.auth.getUser()
         
         if (user) {
+          // Fetch profile
           const { data: profile } = await supabase
             .from("profiles")
             .select("id, full_name, email")
@@ -47,14 +58,34 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
           if (profile) {
             setUserProfile(profile)
           }
+
+          // Fetch approved companies for this vendor
+          const { data: relationships, error: relError } = await supabase
+            .from("vendor_company_relationships")
+            .select(`
+              company_id,
+              companies (
+                id,
+                name
+              )
+            `)
+            .eq("vendor_id", user.id)
+            .eq("status", "approved")
+
+          if (!relError && relationships) {
+            const companiesList = relationships
+              .map((rel: any) => rel.companies)
+              .filter(Boolean)
+            setCompanies(companiesList)
+          }
         }
       } catch (error) {
-        console.error("Error fetching profile:", error)
+        console.error("Error fetching data:", error)
       } finally {
         setLoadingProfile(false)
       }
     }
-    fetchProfile()
+    fetchData()
   }, [])
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -128,6 +159,11 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
     e.preventDefault()
     if (!file) {
       toast.error("Please select a file")
+      return
+    }
+
+    if (!selectedCompany) {
+      toast.error("Please select a company")
       return
     }
 
@@ -216,6 +252,7 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
       // Create invoice record with extracted data
       const invoiceData = {
         user_id: user.id,
+        company_id: selectedCompany,
         invoice_number: extractedData.invoice_number,
         vendor_name: vendorName, // Use vendor's profile name instead of OCR extracted name
         amount: extractedData.amount, // Keep the extracted amount
@@ -223,7 +260,7 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
         invoice_date: extractedData.invoice_date,
         file_url: publicUrl,
         status: status,
-        description: `Auto-uploaded from ${file.name}`,
+        description: notes || `Auto-uploaded from ${file.name}`,
       }
       
       console.log("Inserting invoice record:", invoiceData)
@@ -259,6 +296,8 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
       setFile(null)
       setPreview(null)
       setExtractedData(null)
+      setSelectedCompany("")
+      setNotes("")
       
       // Reset file input
       const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
@@ -306,10 +345,37 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
       </CardHeader>
       <CardContent>
         <form onSubmit={handleUpload} className="space-y-6">
+          {/* Company Selection */}
+          <div className="space-y-2">
+            <Label htmlFor="company" className="text-slate-200 flex items-center gap-2">
+              <Building2 className="h-4 w-4" />
+              Select Company *
+            </Label>
+            <Select value={selectedCompany} onValueChange={setSelectedCompany} disabled={loading || extracting}>
+              <SelectTrigger className="bg-slate-800 border-slate-600 text-slate-200">
+                <SelectValue placeholder="Choose a company to send invoice to" />
+              </SelectTrigger>
+              <SelectContent className="bg-slate-800 border-slate-600">
+                {companies.length === 0 ? (
+                  <div className="p-4 text-center text-slate-400 text-sm">
+                    No approved companies yet. Contact admin to get approved.
+                  </div>
+                ) : (
+                  companies.map((company) => (
+                    <SelectItem key={company.id} value={company.id} className="text-slate-200">
+                      {company.name}
+                    </SelectItem>
+                  ))
+                )}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-slate-400">Companies you are approved to supply to</p>
+          </div>
+
           {/* File Upload */}
           <div className="space-y-2">
             <Label htmlFor="file" className="text-slate-200">
-              Select Invoice File
+              Select Invoice File *
             </Label>
             <div className="flex items-center gap-2">
               <Input
@@ -358,14 +424,38 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
             </div>
           )}
 
+          {/* Optional Notes */}
+          <div className="space-y-2">
+            <Label htmlFor="notes" className="text-slate-200">
+              Optional Notes
+            </Label>
+            <Textarea
+              id="notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Add any additional notes or comments about this invoice..."
+              className="bg-slate-800 border-slate-600 text-slate-200 min-h-[80px]"
+              disabled={loading || extracting}
+            />
+            <p className="text-xs text-slate-400">Optional: Add context or special instructions</p>
+          </div>
+
           {/* Vendor Name Display */}
-          {userProfile && (
+          {userProfile && selectedCompany && (
             <div className="p-3 bg-blue-500/10 rounded-lg border border-blue-500/30">
-              <Label className="text-slate-300 text-xs">Your Invoice Will Be Saved As</Label>
-              <p className="text-blue-400 font-semibold mt-1">
-                {userProfile.full_name || userProfile.email}
-              </p>
-              <p className="text-slate-400 text-xs mt-0.5">{userProfile.email}</p>
+              <Label className="text-slate-300 text-xs">Invoice Details</Label>
+              <div className="mt-1 space-y-1">
+                <p className="text-slate-200 text-sm">
+                  <span className="text-slate-400">From:</span>{" "}
+                  <span className="font-semibold text-blue-400">{userProfile.full_name || userProfile.email}</span>
+                </p>
+                <p className="text-slate-200 text-sm">
+                  <span className="text-slate-400">To:</span>{" "}
+                  <span className="font-semibold text-blue-400">
+                    {companies.find(c => c.id === selectedCompany)?.name || "Selected Company"}
+                  </span>
+                </p>
+              </div>
             </div>
           )}
 
@@ -403,6 +493,46 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
 
           {/* Action Buttons */}
           <div className="flex gap-2">
+            {/* Cancel Button - Always visible */}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setFile(null)
+                setPreview(null)
+                setExtractedData(null)
+                const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+                if (fileInput) fileInput.value = ""
+                toast.info("Upload cancelled")
+              }}
+              disabled={loading || extracting}
+              className="flex-1"
+            >
+              Cancel
+            </Button>
+
+            {/* Re-upload Button - Show after data extracted */}
+            {extractedData && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setFile(null)
+                  setPreview(null)
+                  setExtractedData(null)
+                  const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+                  if (fileInput) fileInput.value = ""
+                  toast.info("Ready to upload a new file")
+                }}
+                disabled={loading || extracting}
+                className="flex-1 border-blue-500 text-blue-400 hover:bg-blue-500/10"
+              >
+                <Upload className="h-4 w-4 mr-2" />
+                Re-upload
+              </Button>
+            )}
+
+            {/* Extract Data Button - Show when file selected but not extracted */}
             {!extractedData && file && (
               <Button
                 type="button"
@@ -413,7 +543,7 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
                 {extracting ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Extracting with AI...
+                    Extracting...
                   </>
                 ) : (
                   <>
@@ -424,6 +554,7 @@ export default function UploadInvoice({ onUploadSuccess }: { onUploadSuccess?: (
               </Button>
             )}
 
+            {/* Save Invoice Button - Show after data extracted */}
             {extractedData && (
               <Button
                 type="submit"

@@ -1,4 +1,6 @@
 import type React from "react"
+import { useEffect, useState } from "react"
+import { createClient } from "@/lib/supabase/client"
 import {
   Card,
   CardHeader,
@@ -16,7 +18,7 @@ import {
 } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Eye, MessageSquare } from "lucide-react"
+import { Eye, MessageSquare, Building2 } from "lucide-react"
 
 // Helper function to get status color
 const getStatusColor = (status: string) => {
@@ -52,6 +54,7 @@ interface Invoice {
   description?: string | null
   comments?: string | null
   latest_comment?: { comment: string; created_at: string; user_id: string } | null
+  company_id?: string | null
 }
 
 interface InvoiceListProps {
@@ -60,6 +63,32 @@ interface InvoiceListProps {
 }
 
 const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [], onView }) => {
+  const [companyNames, setCompanyNames] = useState<Record<string, string>>({})
+
+  useEffect(() => {
+    const fetchCompanyNames = async () => {
+      const supabase = createClient()
+      const companyIds = [...new Set(invoices.map(inv => inv.company_id).filter(Boolean))]
+      
+      if (companyIds.length === 0) return
+
+      const { data } = await supabase
+        .from("companies")
+        .select("id, name")
+        .in("id", companyIds)
+
+      if (data) {
+        const namesMap: Record<string, string> = {}
+        data.forEach((company: any) => {
+          namesMap[company.id] = company.name
+        })
+        setCompanyNames(namesMap)
+      }
+    }
+
+    fetchCompanyNames()
+  }, [invoices])
+
   const totalAmount = invoices.reduce((acc, invoice) => acc + invoice.amount, 0)
   const paidAmount = invoices.reduce((acc, invoice) => acc + (invoice.status.toLowerCase() === "paid" ? invoice.amount : 0), 0)
   const submittedAmount = invoices.reduce((acc, invoice) => acc + (invoice.status.toLowerCase() === "submitted" ? invoice.amount : 0), 0)
@@ -112,6 +141,7 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [], onView }) => {
                 <TableHeader>
                   <TableRow className="border-slate-700 hover:bg-transparent">
                     <TableHead className="text-slate-200 font-semibold">Invoice #</TableHead>
+                    <TableHead className="text-slate-200 font-semibold">Company</TableHead>
                     <TableHead className="text-slate-200 font-semibold">Vendor</TableHead>
                     <TableHead className="text-slate-200 font-semibold">Amount</TableHead>
                     <TableHead className="text-slate-200 font-semibold">Due Date</TableHead>
@@ -124,6 +154,16 @@ const InvoiceList: React.FC<InvoiceListProps> = ({ invoices = [], onView }) => {
                   {invoices.map((invoice) => (
                     <TableRow key={invoice.id} className="border-slate-700 hover:bg-slate-700/30">
                       <TableCell className="text-slate-100">{invoice.invoice_number}</TableCell>
+                      <TableCell>
+                        {invoice.company_id && companyNames[invoice.company_id] ? (
+                          <div className="flex items-center gap-2 text-slate-100">
+                            <Building2 className="h-4 w-4 text-blue-400" />
+                            {companyNames[invoice.company_id]}
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 text-sm">Not assigned</span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-slate-100">{invoice.vendor_name}</TableCell>
                       <TableCell className="text-slate-100">${invoice.amount.toFixed(2)}</TableCell>
                       <TableCell className="text-slate-100">

@@ -9,6 +9,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "Missing message or userId" }, { status: 400 })
     }
 
+    
     const admin = createAdminClient()
 
     // Fetch user's invoices for context
